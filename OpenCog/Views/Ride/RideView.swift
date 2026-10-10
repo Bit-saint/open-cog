@@ -10,6 +10,7 @@ struct RideView: View {
     @State private var confirmingFinish = false
     @State private var finishedRide: RideRecord?
     @State private var visibleFeedback: ControlFeedback?
+    @State private var choosingWorkout = false
 
     var body: some View {
         NavigationStack {
@@ -18,6 +19,12 @@ struct RideView: View {
             .navigationTitle("Ride")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { choosingWorkout = true } label: {
+                        Label("Workouts", systemImage: "list.bullet.rectangle.portrait")
+                            .labelStyle(.titleAndIcon)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { selectedTab = .devices } label: { DeviceStatusBar() }
                         .accessibilityHint("Opens Devices")
@@ -28,6 +35,9 @@ struct RideView: View {
                 Button("Save Ride") { saveRide() }
                 Button("Discard Ride", role: .destructive) { engine.discard() }
                 Button("Keep Riding", role: .cancel) {}
+            }
+            .sheet(isPresented: $choosingWorkout) {
+                WorkoutPickerView()
             }
             .sheet(item: $finishedRide) { ride in
                 NavigationStack {

@@ -14,6 +14,19 @@ import SwiftUI
 ///                                             └───────────────────────┘
 struct RideDashboard: View {
     @Binding var confirmingFinish: Bool
+    @Environment(RideEngine.self) private var engine
+
+    /// While a workout runs, its progress card takes the chart's place and is always shown.
+    private var inWorkout: Bool { engine.workout.workout != nil }
+
+    @ViewBuilder
+    private var slotContent: some View {
+        if inWorkout {
+            WorkoutProgressCard()
+        } else {
+            LiveChartCard()
+        }
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -34,9 +47,10 @@ struct RideDashboard: View {
         let inner = CGSize(width: size.width - padding * 2, height: size.height - padding * 2)
         let sideWidth = min(320, max(240, inner.width * 0.28))
         let mainWidth = inner.width - sideWidth - spacing
-        let showChart = inner.height >= 520
-        let heroHeight = inner.height * (showChart ? 0.38 : 0.50)
-        let secondaryHeight = inner.height * (showChart ? 0.30 : 0.50) - spacing
+        let roomy = inner.height >= 520
+        let showChart = roomy || inWorkout
+        let heroHeight = inner.height * (showChart ? (roomy ? 0.38 : 0.30) : 0.50)
+        let secondaryHeight = inner.height * (showChart ? (roomy ? 0.30 : 0.28) : 0.50) - spacing
 
         return HStack(alignment: .top, spacing: spacing) {
             VStack(spacing: spacing) {
@@ -45,7 +59,7 @@ struct RideDashboard: View {
                 SecondaryGrid(spacing: spacing)
                     .frame(height: secondaryHeight)
                 if showChart {
-                    LiveChartCard()
+                    slotContent
                         .frame(maxHeight: .infinity)
                 }
             }
@@ -69,11 +83,19 @@ struct RideDashboard: View {
         let inner = CGSize(width: size.width - padding * 2, height: size.height - padding * 2)
         let controlsHeight: CGFloat = 50
         let panelHeight = min(max(inner.height * 0.22, 150), 220)
-        let heroHeight = inner.height * 0.24
-        let secondaryHeight = inner.height * 0.22
-        let used = heroHeight + secondaryHeight + panelHeight + controlsHeight + spacing * 4
-        let chartHeight = inner.height - used
-        let showChart = chartHeight >= 90
+        var heroHeight = inner.height * 0.24
+        var secondaryHeight = inner.height * 0.22
+        var chartHeight = inner.height - (heroHeight + secondaryHeight + panelHeight + controlsHeight + spacing * 4)
+        // A running workout needs its card: borrow space from the metric tiles if necessary.
+        if inWorkout && chartHeight < 130 {
+            let deficit = 130 - chartHeight
+            let fromHero = max(min(deficit * 0.6, heroHeight - 100), 0)
+            let fromSecondary = max(min(deficit - fromHero, secondaryHeight - 90), 0)
+            heroHeight -= fromHero
+            secondaryHeight -= fromSecondary
+            chartHeight += fromHero + fromSecondary
+        }
+        let showChart = chartHeight >= (inWorkout ? 100 : 90)
         // Without a chart, give its space to the hero tiles.
         let heroFinal = showChart ? heroHeight : heroHeight + max(chartHeight, 0) + spacing
 
@@ -83,7 +105,7 @@ struct RideDashboard: View {
             SecondaryGrid(spacing: spacing)
                 .frame(height: secondaryHeight)
             if showChart {
-                LiveChartCard()
+                slotContent
                     .frame(height: chartHeight)
             }
             TrainerPanel(layout: .horizontal)
@@ -113,7 +135,7 @@ private struct HeroRow: View {
 
     private var heartRate: some View {
         let bpm = engine.heartRate
-        let zone = bpm.flatMap { TrainingZone.heartRate($0, max: settings.maxHeartRate) }
+        let zone = bpm.flatMap { settings.heartRateZones.zone(for: $0) }
         let detail: String
         if let zone {
             detail = "Zone \(zone.number) · \(zone.name)"

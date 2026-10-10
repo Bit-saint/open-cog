@@ -21,8 +21,12 @@ struct SettingsView: View {
                     Stepper(value: $settings.ftp, in: 50...500, step: 5) {
                         LabeledContent("FTP", value: "\(settings.ftp) W")
                     }
-                    Stepper(value: $settings.maxHeartRate, in: 120...230) {
-                        LabeledContent("Max heart rate", value: "\(settings.maxHeartRate) bpm")
+                    NavigationLink {
+                        HeartRateZonesView()
+                    } label: {
+                        let zones = settings.heartRateZones
+                        LabeledContent("Heart-rate zones",
+                                       value: "Max \(settings.maxHeartRate) · Z2 \(zones.lowerLimit(ofZone: 2))–\(zones.upperLimit(ofZone: 2) - 1)")
                     }
                 }
 
@@ -59,6 +63,7 @@ struct SettingsView: View {
                     ButtonMappingRow(button: "D-pad up / down", action: "Grade ±0.5 % · ±10 W in ERG")
                     ButtonMappingRow(button: "A", action: "Start · pause · resume ride")
                     ButtonMappingRow(button: "Y", action: "Switch Gears / ERG mode")
+                    ButtonMappingRow(button: "B", action: "Skip to next workout step")
                 } header: {
                     Text("Zwift Click Buttons")
                 }

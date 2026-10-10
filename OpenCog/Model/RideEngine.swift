@@ -35,6 +35,8 @@ struct LivePoint: Identifiable, Equatable {
 final class RideEngine {
     let bluetooth: BluetoothManager
     let settings: AppSettings
+    /// Structured workout (VO₂max intervals or heart-rate controlled Zone 2), if one is running.
+    let workout = WorkoutController()
 
     // MARK: Live values
     private(set) var power = 0
@@ -107,7 +109,7 @@ final class RideEngine {
             sendPhysical()
         case .erg:
             // Gear commands are ignored in ERG, so the shifters nudge the target instead.
-            setErgTarget(ergTarget + delta * 5)
+            adjustErgTarget(by: delta * 5)
         }
     }
 
@@ -121,7 +123,14 @@ final class RideEngine {
         if mode == .sim { sendSimulation() }
     }
 
-    func adjustErgTarget(by delta: Int) { setErgTarget(ergTarget + delta) }
+    func adjustErgTarget(by delta: Int) {
+        if workout.isActive {
+            workout.nudge(delta)
+            applyWorkoutTarget()
+        } else {
+            setErgTarget(ergTarget + delta)
+        }
+    }
 
     func setErgTarget(_ watts: Int) {
         let clamped = min(max(watts, Self.ergRange.lowerBound), Self.ergRange.upperBound)
@@ -132,6 +141,7 @@ final class RideEngine {
 
     func setMode(_ newMode: TrainerMode) {
         guard newMode != mode else { return }
+        if newMode == .sim && workout.isActive { workout.end() }
         mode = newMode
         pushTrainerState()
     }
@@ -158,6 +168,46 @@ final class RideEngine {
                                             riderKg: settings.riderWeightKg)
         lastPhysicalCommand = command
         bluetooth.sendToTrainer(command)
+    }
+
+    // MARK: Workouts
+
+    /// Starts a structured workout in ERG mode, starting the ride too if needed.
+    func startWorkout(_ selected: Workout) {
+        workout.start(selected, ftp: settings.ftp)
+        if mode != .erg {
+            mode = .erg
+        }
+        if state == .idle { start() }
+        if let watts = workout.targetWatts(ftp: settings.ftp) { ergTarget = watts }
+        pushTrainerState()
+        feedback = ControlFeedback(text: selected.name, systemImage: "figure.indoor.cycle")
+    }
+
+    func endWorkout() {
+        workout.end()
+    }
+
+    func skipWorkoutStep() {
+        guard workout.isActive else { return }
+        if workout.skip() {
+            applyWorkoutTarget()
+            announceStep()
+        } else {
+            feedback = ControlFeedback(text: "Workout complete", systemImage: "checkmark.seal.fill")
+        }
+    }
+
+    private func applyWorkoutTarget() {
+        guard let watts = workout.targetWatts(ftp: settings.ftp) else { return }
+        setErgTarget(watts)
+    }
+
+    private func announceStep() {
+        guard let step = workout.step else { return }
+        let target = step.isHeartRateControlled ? "HR control" : "\(workout.targetWatts(ftp: settings.ftp) ?? ergTarget) W"
+        feedback = ControlFeedback(text: "\(step.label) · \(Format.duration(step.duration)) · \(target)",
+                                   systemImage: step.intensity >= 1 ? "flame.fill" : "leaf.fill")
     }
 
     // MARK: Ride lifecycle
@@ -194,12 +244,14 @@ final class RideEngine {
     func finish() -> RideRecord? {
         defer { reset() }
         guard let startDate, metrics.seconds >= 10 else { return nil }
-        return RideRecord(startDate: startDate, metrics: metrics, samples: samples, ftp: settings.ftp)
+        return RideRecord(startDate: startDate, metrics: metrics, samples: samples, ftp: settings.ftp,
+                          workoutName: workout.workout?.name)
     }
 
     func discard() { reset() }
 
     private func reset() {
+        workout.end()
         state = .idle
         startDate = nil
         metrics = RideMetrics()
@@ -268,6 +320,8 @@ final class RideEngine {
         case .y:
             setMode(mode == .sim ? .erg : .sim)
             showFeedback(for: button)
+        case .b:
+            skipWorkoutStep()
         default:
             break
         }
@@ -382,5 +436,15 @@ final class RideEngine {
                                 ergTarget: mode == .erg ? ergTarget : nil)
         samples.append(sample)
         metrics.add(sample)
+
+        if workout.isActive {
+            let event = workout.advance(heartRate: heartRate, zones: settings.heartRateZones, ftp: settings.ftp)
+            applyWorkoutTarget()
+            switch event {
+            case .stepChanged: announceStep()
+            case .finished: feedback = ControlFeedback(text: "Workout complete", systemImage: "checkmark.seal.fill")
+            case nil: break
+            }
+        }
     }
 }

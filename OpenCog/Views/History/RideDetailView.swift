@@ -12,6 +12,11 @@ struct RideDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                if let name = ride.workoutName {
+                    Label(name, systemImage: "list.bullet.rectangle.portrait")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 LazyVGrid(columns: columns, spacing: 12) {
                     stat("Duration", Format.duration(ride.duration), "", "clock", .blue)
                     let distance = Format.distance(ride.distance, units: settings.units)
@@ -27,6 +32,7 @@ struct RideDetailView: View {
                 }
 
                 if !samples.isEmpty {
+                    analysisCard
                     powerChart.card()
                     if samples.contains(where: { $0.heartRate != nil }) {
                         heartRateChart.card()
@@ -51,6 +57,70 @@ struct RideDetailView: View {
             samples = ride.samples
             exportURL = try? TCXExporter.writeFile(for: ride, samples: samples)
         }
+    }
+
+    private var analysis: RideAnalysis {
+        RideAnalysis(samples: samples, zones: settings.heartRateZones, ftp: ride.ftp)
+    }
+
+    /// Time in heart-rate zones, estimated fat burned and aerobic decoupling.
+    private var analysisCard: some View {
+        let result = analysis
+        let totalHR = max(result.heartRateZoneSeconds.reduce(0, +), 1)
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Heart-Rate Zones").font(.headline)
+            if result.heartRateZoneSeconds.reduce(0, +) == 0 {
+                Text("No heart-rate data in this ride.").foregroundStyle(.secondary)
+            } else {
+                ForEach(0..<5, id: \.self) { index in
+                    let seconds = result.heartRateZoneSeconds[index]
+                    HStack(spacing: 10) {
+                        Text("Z\(index + 1)")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(width: 28, alignment: .leading)
+                        GeometryReader { geo in
+                            Capsule()
+                                .fill(TrainingZone.heartRateColors[index].gradient)
+                                .frame(width: max(geo.size.width * Double(seconds) / Double(totalHR), seconds > 0 ? 4 : 0))
+                        }
+                        .frame(height: 12)
+                        Text(Format.duration(seconds))
+                            .font(.subheadline)
+                            .monospacedDigit()
+                            .frame(width: 64, alignment: .trailing)
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Fat burned").font(.caption).foregroundStyle(.secondary)
+                    Text(String(format: "≈ %.0f g", result.fatGrams)).font(.title3.weight(.semibold))
+                    Text(String(format: "%.0f kcal · %.0f g carbs", result.kilocalories, result.carbGrams))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("Aerobic decoupling").font(.caption).foregroundStyle(.secondary)
+                    if let drift = result.decouplingPercent {
+                        Text(String(format: "%.1f %%", drift))
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(drift < 5 ? .green : .orange)
+                        Text(drift < 5 ? "Solid aerobic base" : "Heart rate drifted up")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("—").font(.title3.weight(.semibold))
+                        Text("Needs 20+ min with HR").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Text("Fat and carbohydrate are estimates from power and FTP; individual values vary.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .card()
     }
 
     private var columns: [GridItem] {

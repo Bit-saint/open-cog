@@ -16,6 +16,8 @@ final class RideRecord {
     var kilojoules: Int
     var tss: Double
     var ftp: Int
+    /// Name of the structured workout ridden, if any.
+    var workoutName: String? = nil
     @Attribute(.externalStorage) var samplesData: Data
 
     init(date: Date, duration: Int, distance: Double, averagePower: Int, normalizedPower: Int,
@@ -42,7 +44,8 @@ final class RideRecord {
 }
 
 extension RideRecord {
-    convenience init(startDate: Date, metrics: RideMetrics, samples: [RideSample], ftp: Int) {
+    convenience init(startDate: Date, metrics: RideMetrics, samples: [RideSample], ftp: Int,
+                     workoutName: String? = nil) {
         self.init(date: startDate,
                   duration: metrics.seconds,
                   distance: metrics.distance,
@@ -56,5 +59,6 @@ extension RideRecord {
                   tss: metrics.trainingStressScore(ftp: ftp),
                   ftp: ftp,
                   samples: samples)
+        self.workoutName = workoutName
     }
 }

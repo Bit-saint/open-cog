@@ -16,6 +16,16 @@ which gear ratio, grade or ERG target to simulate, using the Zwift protocol desc
   negative grade it rides as flat and the app shows the extra speed on screen.
 - **ERG mode** with a target from 50 to 600 W, adjusted in 5, 10 or 25 W steps. In ERG mode the paddles change the
   target by ±5 W.
+- **Workouts** (Ride › Workouts):
+  - *VO₂max intervals* in ERG: Norwegian 4×4, Rønnestad 30/15 and 5 × 3 min, with targets from your FTP.
+    The shifters adjust the target ±5 W for the rest of the workout, and B skips to the next step.
+    Time spent in heart-rate Zone 5 is shown live.
+  - *Zone 2 (fat burning)*, 45/60/90 min: the app adjusts ERG power every 10 s to keep your heart rate
+    inside your Zone 2.
+- **Heart-rate zones** (Settings): max heart rate, % of max or % of heart-rate reserve (Karvonen), and
+  adjustable limits for every zone.
+- **After-ride analysis**: time in each heart-rate zone, estimated fat and carbohydrate burned, and
+  aerobic decoupling.
 - **Live dashboard** showing power (tinted by FTP zone), heart rate (tinted by HR zone), estimated cadence, virtual
   speed, distance, average power, Normalized Power with TSS, and energy. A rolling 5-minute power and heart-rate
   chart sits underneath.

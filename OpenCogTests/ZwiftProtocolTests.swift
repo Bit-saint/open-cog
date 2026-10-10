@@ -226,3 +226,101 @@ final class PhysicsTests: XCTestCase {
         XCTAssertEqual(metrics.trainingStressScore(ftp: 200), 100.0 * 120 / 3600, accuracy: 0.01)
     }
 }
+
+final class WorkoutTests: XCTestCase {
+    private let zones = HeartRateZones(method: .percentOfMax, maxHeartRate: 190, restingHeartRate: 60,
+                                       boundaries: HeartRateZones.defaultBoundaries)
+
+    func testLibraryDurations() {
+        // 10 min warm-up + 4 × 4 min + 3 × 3 min + 5 min cool-down
+        XCTAssertEqual(WorkoutLibrary.norwegian4x4.duration, 600 + 4 * 240 + 3 * 180 + 300)
+        // 10 min warm-up + 3 × 13 × 45 s + 2 × 3 min + 5 min cool-down
+        XCTAssertEqual(WorkoutLibrary.ronnestad3015.duration, 600 + 3 * 13 * 45 + 2 * 180 + 300)
+        XCTAssertEqual(WorkoutLibrary.zone2(minutes: 60).duration, 300 + 3600 + 300)
+        XCTAssertTrue(WorkoutLibrary.zone2(minutes: 45).isHeartRateControlled)
+        XCTAssertFalse(WorkoutLibrary.fiveByThree.isHeartRateControlled)
+    }
+
+    func testStepsAdvanceAndTargets() {
+        let controller = WorkoutController()
+        let workout = Workout(id: "t", name: "Test", category: .vo2max, summary: "", steps: [
+            WorkoutStep(label: "A", duration: 3, target: .power(0.5)),
+            WorkoutStep(label: "B", duration: 2, target: .power(1.1)),
+        ])
+        controller.start(workout, ftp: 250)
+        XCTAssertEqual(controller.targetWatts(ftp: 250), 125)
+        XCTAssertNil(controller.advance(heartRate: nil, zones: zones, ftp: 250))
+        XCTAssertNil(controller.advance(heartRate: nil, zones: zones, ftp: 250))
+        XCTAssertEqual(controller.advance(heartRate: nil, zones: zones, ftp: 250), .stepChanged)
+        XCTAssertEqual(controller.step?.label, "B")
+        XCTAssertEqual(controller.targetWatts(ftp: 250), 275)
+        controller.nudge(10)
+        XCTAssertEqual(controller.targetWatts(ftp: 250), 285)
+        XCTAssertNil(controller.advance(heartRate: 180, zones: zones, ftp: 250))
+        XCTAssertEqual(controller.secondsInZone5, 1) // 180 ≥ 171 (90 % of 190)
+        XCTAssertEqual(controller.advance(heartRate: nil, zones: zones, ftp: 250), .finished)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertNil(controller.targetWatts(ftp: 250))
+    }
+
+    func testSkip() {
+        let controller = WorkoutController()
+        controller.start(WorkoutLibrary.norwegian4x4, ftp: 200)
+        XCTAssertTrue(controller.skip())
+        XCTAssertEqual(controller.stepIndex, 1)
+        XCTAssertEqual(controller.elapsed, 300)
+    }
+
+    func testHeartRateControlLowersPowerWhenHeartRateHigh() {
+        let controller = WorkoutController()
+        let workout = Workout(id: "z2", name: "Z2", category: .zone2, summary: "", steps: [
+            WorkoutStep(label: "Zone 2", duration: 600, target: .heartRateZone(2)),
+        ])
+        controller.start(workout, ftp: 250) // starts at 60 % FTP = 150 W
+        let start = controller.heartRateWatts
+        for _ in 0..<60 { _ = controller.advance(heartRate: 160, zones: zones, ftp: 250) } // Zone 2 = 114–132
+        XCTAssertLessThan(controller.heartRateWatts, start)
+        let lowered = controller.heartRateWatts
+        for _ in 0..<60 { _ = controller.advance(heartRate: 100, zones: zones, ftp: 250) }
+        XCTAssertGreaterThan(controller.heartRateWatts, lowered)
+        // In band: no change, and counted as time in target.
+        let held = controller.heartRateWatts
+        for _ in 0..<20 { _ = controller.advance(heartRate: 123, zones: zones, ftp: 250) }
+        XCTAssertEqual(controller.heartRateWatts, held, accuracy: 0.8 * 1 + 0.001)
+        XCTAssertEqual(controller.secondsInHeartRateTarget, 20)
+        // No heart rate: hold power.
+        let before = controller.heartRateWatts
+        for _ in 0..<30 { _ = controller.advance(heartRate: nil, zones: zones, ftp: 250) }
+        XCTAssertTrue(controller.missingHeartRate)
+        XCTAssertEqual(controller.heartRateWatts, before)
+    }
+
+    func testHeartRateZones() {
+        XCTAssertEqual(zones.limits, [114, 133, 152, 171])
+        XCTAssertEqual(zones.zone(for: 100)?.number, 1)
+        XCTAssertEqual(zones.zone(for: 120)?.number, 2)
+        XCTAssertEqual(zones.zone(for: 171)?.number, 5)
+        XCTAssertEqual(zones.lowerLimit(ofZone: 2), 114)
+        XCTAssertEqual(zones.upperLimit(ofZone: 2), 133)
+        XCTAssertEqual(zones.upperLimit(ofZone: 5), 190)
+
+        // Karvonen: 60 + 0.6 × (190 − 60) = 138
+        let reserve = HeartRateZones(method: .heartRateReserve, maxHeartRate: 190, restingHeartRate: 60,
+                                     boundaries: HeartRateZones.defaultBoundaries)
+        XCTAssertEqual(reserve.lowerLimit(ofZone: 2), 138)
+    }
+
+    func testRideAnalysis() {
+        // 30 min at 60 % FTP with heart rate in Zone 2 and steady.
+        let samples = (0..<1800).map {
+            RideSample(t: $0, power: 150, heartRate: 125, cadence: 85, speed: 8, gear: 12, grade: 0)
+        }
+        let analysis = RideAnalysis(samples: samples, zones: zones, ftp: 250)
+        XCTAssertEqual(analysis.heartRateZoneSeconds, [0, 1800, 0, 0, 0])
+        // 150 W × 1800 s = 270 kJ mechanical → ≈ 269 kcal metabolic at 24 % efficiency.
+        XCTAssertEqual(analysis.kilocalories, 270_000 / 0.24 / 4184, accuracy: 0.5)
+        XCTAssertGreaterThan(analysis.fatGrams, 10)
+        XCTAssertEqual(analysis.decouplingPercent ?? 99, 0, accuracy: 0.001)
+        XCTAssertGreaterThan(RideAnalysis.fatFraction(intensity: 0.6), RideAnalysis.fatFraction(intensity: 1.1))
+    }
+}

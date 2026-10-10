@@ -148,7 +148,7 @@ struct TrainerPanel: View {
                 }
                 Spacer(minLength: 4)
                 VStack(spacing: 0) {
-                    Text("TARGET")
+                    Text(engine.workout.isActive ? "WORKOUT TARGET" : "TARGET")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                     HStack(alignment: .firstTextBaseline, spacing: 3) {
