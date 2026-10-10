@@ -13,10 +13,15 @@ final class BluetoothManager: NSObject {
     private(set) var isScanning = false
     private(set) var links: [DeviceRole: DeviceLink] = [:]
     private(set) var discovered: [UUID: DiscoveredDevice] = [:]
+    /// Most recent Bluetooth events, newest last (Devices › Diagnostics).
+    private(set) var eventLog: [BLELogEntry] = []
+    private(set) var stats: [DeviceRole: LinkStats] = [:]
 
     // MARK: Event callbacks
 
     @ObservationIgnored var onRidingData: ((RidingData) -> Void)?
+    /// Power/speed from FTMS or Cycling Power, used when Zwift RidingData isn't arriving.
+    @ObservationIgnored var onTrainerFallbackData: ((TrainerFallbackData) -> Void)?
     @ObservationIgnored var onButtons: (([ZwiftButton]) -> Void)?
     @ObservationIgnored var onHeartRate: ((Int?) -> Void)?
     /// Called after every successful trainer handshake (including reconnects) so the
@@ -39,6 +44,9 @@ final class BluetoothManager: NSObject {
     @ObservationIgnored private var pendingTrainerWrites: [Data] = []
     /// Devices the user forgot this session; never auto-connected again until picked manually.
     @ObservationIgnored private var forgotten: Set<UUID> = []
+    @ObservationIgnored private var lastClickBitmap: [DeviceRole: UInt32] = [:]
+    @ObservationIgnored private var lastLoggedCommand: [UInt8: Data] = [:]
+    @ObservationIgnored private var loggedFallbackSources: Set<String> = []
     @ObservationIgnored private var clickInput = ClickInputProcessor()
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let log = Logger(subsystem: "OpenCog", category: "Bluetooth")
@@ -139,6 +147,12 @@ final class BluetoothManager: NSObject {
         notifying[peripheral.identifier] = []
         rxCharacteristics[peripheral.identifier] = nil
         handshakeAttempts[peripheral.identifier] = 0
+        stats[role] = LinkStats()
+        lastClickBitmap[role] = nil
+        if role == .trainer {
+            lastLoggedCommand.removeAll()
+            loggedFallbackSources.removeAll()
+        }
         updateLink(role) { $0.state = role.usesZwiftProtocol ? .handshaking : .connecting }
         peripheral.discoverServices(role.servicesToDiscover)
     }
@@ -191,21 +205,32 @@ final class BluetoothManager: NSObject {
         guard let rx = rxCharacteristics[id] else { return }
         let attempt = (handshakeAttempts[id] ?? 0) + 1
         handshakeAttempts[id] = attempt
-        log.debug("RideOn → \(role.rawValue, privacy: .public) (attempt \(attempt))")
-        peripheral.writeValue(Zwift.rideOn, for: rx, type: .withoutResponse)
+        updateStats(role) { $0.handshakeAttempts = attempt }
+        record(role, "→ RideOn (attempt \(attempt), \(writeType(for: rx) == .withResponse ? "with" : "without") response)")
+        peripheral.writeValue(Zwift.rideOn, for: rx, type: writeType(for: rx))
 
-        // No reply? Try again a few times.
+        // No reply? Try again; after several attempts carry on anyway so commands still go out.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self, self.links[role]?.id == id, self.links[role]?.state == .handshaking,
-                  peripheral.state == .connected, attempt < 4 else { return }
-            self.sendHandshake(peripheral, role: role)
+                  peripheral.state == .connected else { return }
+            if attempt < 5 {
+                self.sendHandshake(peripheral, role: role)
+            } else {
+                self.record(role, "No RideOn reply after \(attempt) attempts; continuing without it")
+                self.markReady(role)
+            }
         }
+    }
+
+    /// Sync RX is write-without-response on the devices tested; fall back to a normal write otherwise.
+    private func writeType(for characteristic: CBCharacteristic) -> CBCharacteristicWriteType {
+        characteristic.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
     }
 
     private func markReady(_ role: DeviceRole) {
         guard let link = links[role], link.state != .ready else { return }
         updateLink(role) { $0.state = .ready }
-        log.info("\(role.rawValue, privacy: .public) ready")
+        record(role, "Ready")
         if role == .trainer {
             pendingTrainerWrites.removeAll()
             onTrainerReady?()
@@ -216,7 +241,81 @@ final class BluetoothManager: NSObject {
         guard let link = links[.trainer], let peripheral = peripherals[link.id],
               let rx = rxCharacteristics[link.id] else { return }
         while !pendingTrainerWrites.isEmpty && peripheral.canSendWriteWithoutResponse {
-            peripheral.writeValue(pendingTrainerWrites.removeFirst(), for: rx, type: .withoutResponse)
+            let command = pendingTrainerWrites.removeFirst()
+            peripheral.writeValue(command, for: rx, type: writeType(for: rx))
+            let kind = command.count > 1 ? command[command.startIndex + 1] : 0
+            updateStats(.trainer) {
+                $0.commandsWritten += 1
+                $0.lastCommand = command.hexString
+            }
+            if lastLoggedCommand[kind] != command {
+                lastLoggedCommand[kind] = command
+                record(.trainer, "→ \(Self.describe(command)): \(command.hexString)")
+            }
+        }
+    }
+
+    // MARK: Diagnostics
+
+    private func record(_ role: DeviceRole?, _ text: String) {
+        log.info("[\(role?.rawValue ?? "-", privacy: .public)] \(text, privacy: .public)")
+        eventLog.append(BLELogEntry(date: Date(), role: role, text: text))
+        if eventLog.count > 400 { eventLog.removeFirst(eventLog.count - 400) }
+    }
+
+    private func updateStats(_ role: DeviceRole, _ change: (inout LinkStats) -> Void) {
+        var value = stats[role] ?? LinkStats()
+        change(&value)
+        stats[role] = value
+    }
+
+    func clearLog() { eventLog.removeAll() }
+
+    /// Plain-text report for sharing.
+    func diagnosticsReport() -> String {
+        let time = DateFormatter()
+        time.dateFormat = "HH:mm:ss.SSS"
+        var lines = ["OpenCog Bluetooth diagnostics — \(Date().formatted())", "Bluetooth state: \(managerState.rawValue)", ""]
+        for role in DeviceRole.allCases {
+            guard let link = links[role] else {
+                lines.append("\(role.title): not paired")
+                continue
+            }
+            let s = stats[role] ?? LinkStats()
+            lines.append("\(role.title): \(link.name) — \(link.state.title)")
+            lines.append("  services: \(s.services.joined(separator: ", "))")
+            lines.append("  notifying: \(s.notifying.joined(separator: ", "))")
+            lines.append("  handshake attempts: \(s.handshakeAttempts), confirmed: \(s.handshakeConfirmed)")
+            lines.append("  packets: \(s.packetsReceived), last: \(s.lastPacket ?? "-")")
+            if role == .trainer {
+                lines.append("  commands: \(s.commandsWritten), last: \(s.lastCommand ?? "-")")
+            }
+        }
+        lines.append("")
+        lines.append("Events:")
+        for entry in eventLog {
+            lines.append("\(time.string(from: entry.date)) [\(entry.role?.rawValue ?? "-")] \(entry.text)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    static func describe(_ properties: CBCharacteristicProperties) -> String {
+        var names: [String] = []
+        if properties.contains(.read) { names.append("read") }
+        if properties.contains(.write) { names.append("write") }
+        if properties.contains(.writeWithoutResponse) { names.append("write-no-resp") }
+        if properties.contains(.notify) { names.append("notify") }
+        if properties.contains(.indicate) { names.append("indicate") }
+        return names.joined(separator: ",")
+    }
+
+    static func describe(_ command: Data) -> String {
+        guard command.count > 1 else { return "command" }
+        switch command[command.startIndex + 1] {
+        case 0x18: return "ERG"
+        case 0x22: return "Simulation"
+        case 0x2A: return "Gear"
+        default: return "Command"
         }
     }
 
@@ -300,7 +399,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
             central.cancelPeripheralConnection(peripheral)
             return
         }
-        log.info("Connected \(role.rawValue, privacy: .public)")
+        record(role, "Connected to \(displayName(peripheral, fallback: role.title))")
         updateLink(role) { $0.name = self.displayName(peripheral, fallback: role.title) }
         setUp(peripheral, role: role)
     }
@@ -308,7 +407,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral,
                         error: Error?) {
         guard let role = assignedRole(of: peripheral) else { return }
-        log.error("Failed to connect \(role.rawValue, privacy: .public): \(error?.localizedDescription ?? "-", privacy: .public)")
+        record(role, "Failed to connect: \(error?.localizedDescription ?? "unknown error")")
         updateLink(role) { $0.state = .connecting }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self, self.assignedRole(of: peripheral) == role, self.isPoweredOn else { return }
@@ -325,7 +424,7 @@ extension BluetoothManager: CBCentralManagerDelegate {
             roles[id] = nil
             return
         }
-        log.info("Disconnected \(role.rawValue, privacy: .public)")
+        record(role, "Disconnected\(error.map { ": \($0.localizedDescription)" } ?? "")")
         if let side = role.clickSide { clickInput.reset(side: side) }
         if role == .heartRate { onHeartRate?(nil) }
         if role == .trainer { pendingTrainerWrites.removeAll() }
@@ -341,6 +440,16 @@ extension BluetoothManager: CBCentralManagerDelegate {
 
 extension BluetoothManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if let role = assignedRole(of: peripheral) {
+            let names = (peripheral.services ?? []).map(\.uuid.label)
+            updateStats(role) { $0.services = names }
+            record(role, "Services: \(names.isEmpty ? "none" : names.joined(separator: ", "))\(error.map { " (error: \($0.localizedDescription))" } ?? "")")
+            if role.usesZwiftProtocol, !(peripheral.services ?? []).contains(where: {
+                $0.uuid == GATT.zwiftTrainerService || $0.uuid == GATT.zwiftClickService
+            }) {
+                record(role, "Zwift service not found on this device")
+            }
+        }
         for service in peripheral.services ?? [] {
             switch service.uuid {
             case GATT.zwiftTrainerService, GATT.zwiftClickService:
@@ -350,6 +459,10 @@ extension BluetoothManager: CBPeripheralDelegate {
                 peripheral.discoverCharacteristics([GATT.heartRateMeasurement], for: service)
             case GATT.batteryService:
                 peripheral.discoverCharacteristics([GATT.batteryLevel], for: service)
+            case GATT.fitnessMachineService:
+                peripheral.discoverCharacteristics([GATT.indoorBikeData], for: service)
+            case GATT.cyclingPowerService:
+                peripheral.discoverCharacteristics([GATT.cyclingPowerMeasurement], for: service)
             default:
                 break
             }
@@ -358,9 +471,24 @@ extension BluetoothManager: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService,
                     error: Error?) {
+        let role = assignedRole(of: peripheral)
+        if let role, service.uuid == GATT.zwiftTrainerService || service.uuid == GATT.zwiftClickService {
+            let chars = (service.characteristics ?? []).map { "\($0.uuid.label) [\(Self.describe($0.properties))]" }
+            record(role, "Zwift characteristics: \(chars.joined(separator: ", "))\(error.map { " (error: \($0.localizedDescription))" } ?? "")")
+            // If the notification callbacks never confirm, send RideOn anyway after a moment.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, self.assignedRole(of: peripheral) == role,
+                      self.links[role]?.state == .handshaking,
+                      self.handshakeAttempts[peripheral.identifier, default: 0] == 0,
+                      self.rxCharacteristics[peripheral.identifier] != nil else { return }
+                self.record(role, "Notifications not confirmed yet; sending RideOn anyway")
+                self.sendHandshake(peripheral, role: role)
+            }
+        }
         for characteristic in service.characteristics ?? [] {
             switch characteristic.uuid {
-            case GATT.zwiftAsync, GATT.zwiftSyncTx, GATT.heartRateMeasurement:
+            case GATT.zwiftAsync, GATT.zwiftSyncTx, GATT.heartRateMeasurement,
+                 GATT.indoorBikeData, GATT.cyclingPowerMeasurement:
                 peripheral.setNotifyValue(true, for: characteristic)
             case GATT.zwiftSyncRx:
                 rxCharacteristics[peripheral.identifier] = characteristic
@@ -377,11 +505,12 @@ extension BluetoothManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic,
                     error: Error?) {
         if let error {
-            log.error("Notify \(characteristic.uuid.uuidString, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            record(assignedRole(of: peripheral), "Enabling notifications on \(characteristic.uuid.label) failed: \(error.localizedDescription)")
             return
         }
         guard characteristic.isNotifying, let role = assignedRole(of: peripheral) else { return }
         notifying[peripheral.identifier, default: []].insert(characteristic.uuid)
+        updateStats(role) { $0.notifying.append(characteristic.uuid.label) }
         if characteristic.uuid == GATT.heartRateMeasurement {
             markReady(role)
         } else {
@@ -402,20 +531,46 @@ extension BluetoothManager: CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic,
                     error: Error?) {
-        guard error == nil, let data = characteristic.value, let role = assignedRole(of: peripheral) else { return }
+        guard let role = assignedRole(of: peripheral) else { return }
+        if let error {
+            record(role, "Read \(characteristic.uuid.label) failed: \(error.localizedDescription)")
+            return
+        }
+        guard let data = characteristic.value else { return }
 
         switch characteristic.uuid {
         case GATT.zwiftSyncTx:
-            if Zwift.isRideOnReply(data) { markReady(role) }
+            record(role, "← Sync TX: \(data.hexString)")
+            if Zwift.isRideOnReply(data) {
+                updateStats(role) { $0.handshakeConfirmed = true }
+                markReady(role)
+            }
 
         case GATT.zwiftAsync:
             // Events only flow after a successful handshake.
             markReady(role)
+            let count = (stats[role]?.packetsReceived ?? 0) + 1
+            updateStats(role) {
+                $0.packetsReceived = count
+                $0.lastPacket = data.hexString
+                $0.lastPacketDate = Date()
+            }
             if role == .trainer {
-                if let riding = RidingData(data) { onRidingData?(riding) }
+                if count <= 3 || count % 30 == 0 { record(role, "← Async #\(count): \(data.hexString)") }
+                if let riding = RidingData(data) {
+                    onRidingData?(riding)
+                } else if count <= 3 {
+                    record(role, "Async packet is not RidingData")
+                }
             } else if let side = role.clickSide, let message = ClickMessage(data) {
                 switch message {
                 case .buttons(let bitmap):
+                    if lastClickBitmap[role] != bitmap {
+                        if lastClickBitmap[role] != nil || bitmap != 0xFFFF_FFFF {
+                            record(role, "← Buttons \(String(format: "%08X", bitmap))")
+                        }
+                        lastClickBitmap[role] = bitmap
+                    }
                     let presses = clickInput.process(bitmap: bitmap, from: side,
                                                      connected: connectedClickSides,
                                                      now: ProcessInfo.processInfo.systemUptime)
@@ -434,6 +589,25 @@ extension BluetoothManager: CBPeripheralDelegate {
 
         case GATT.batteryLevel:
             if let percent = data.first { updateLink(role) { $0.battery = Int(percent) } }
+
+        case GATT.indoorBikeData:
+            if let bike = IndoorBikeData(data) {
+                if loggedFallbackSources.insert("FTMS").inserted {
+                    record(role, "← FTMS Indoor Bike Data: \(data.hexString)")
+                }
+                onTrainerFallbackData?(TrainerFallbackData(source: "FTMS", power: bike.power,
+                                                           speedMps: bike.speedKmh.map { $0 / 3.6 },
+                                                           cadence: bike.cadence))
+            }
+
+        case GATT.cyclingPowerMeasurement:
+            if let measurement = CyclingPowerMeasurement(data) {
+                if loggedFallbackSources.insert("CP").inserted {
+                    record(role, "← Cycling Power: \(data.hexString)")
+                }
+                onTrainerFallbackData?(TrainerFallbackData(source: "Cycling Power", power: measurement.power,
+                                                           speedMps: nil, cadence: nil))
+            }
 
         default:
             break

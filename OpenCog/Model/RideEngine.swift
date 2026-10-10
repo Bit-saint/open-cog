@@ -44,6 +44,8 @@ final class RideEngine {
     private(set) var heartRate: Int?
     private(set) var virtualSpeed = 0.0
     private(set) var liveHistory: [LivePoint] = []
+    /// Where power/speed currently come from: "Zwift", "FTMS" or "Cycling Power".
+    private(set) var dataSource: String?
 
     // MARK: Trainer control
     private(set) var mode: TrainerMode = .sim
@@ -65,6 +67,7 @@ final class RideEngine {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var tickCount = 0
     @ObservationIgnored private var lastRidingData = Date.distantPast
+    @ObservationIgnored private var lastFallbackData = Date.distantPast
     @ObservationIgnored private var lastHeartRateDate = Date.distantPast
     @ObservationIgnored private var recentPower: [Int] = []
     @ObservationIgnored private var stoppedSeconds = 0
@@ -77,6 +80,7 @@ final class RideEngine {
 
         bluetooth.holdToRepeat = settings.holdToRepeat
         bluetooth.onRidingData = { [weak self] in self?.receive($0) }
+        bluetooth.onTrainerFallbackData = { [weak self] in self?.receiveFallback($0) }
         bluetooth.onHeartRate = { [weak self] in self?.receiveHeartRate($0) }
         bluetooth.onButtons = { [weak self] presses in presses.forEach { self?.handle($0) } }
         bluetooth.onTrainerReady = { [weak self] in self?.pushTrainerState() }
@@ -206,12 +210,34 @@ final class RideEngine {
 
     private func receive(_ data: RidingData) {
         lastRidingData = Date()
+        dataSource = "Zwift"
         power = data.power
         flywheelSpeed = data.flywheelSpeed
-        cadence = Int(RoadPhysics.cadence(flywheelSpeed: data.flywheelSpeed,
-                                          chainringTeeth: settings.chainringTeeth,
-                                          cogTeeth: settings.cogTeeth,
-                                          wheelCircumferenceMm: settings.wheelCircumferenceMm).rounded())
+        cadence = estimatedCadence(flywheelSpeed: data.flywheelSpeed)
+    }
+
+    /// FTMS / Cycling Power data, used only while Zwift RidingData isn't arriving.
+    private func receiveFallback(_ data: TrainerFallbackData) {
+        let now = Date()
+        guard now.timeIntervalSince(lastRidingData) > 2.5 else { return }
+        // Prefer FTMS (it has speed) over Cycling Power when both are flowing.
+        if data.source != "FTMS", dataSource == "FTMS", now.timeIntervalSince(lastFallbackData) < 2 { return }
+        lastFallbackData = now
+        dataSource = data.source
+        if let watts = data.power { power = max(0, watts) }
+        if let speed = data.speedMps { flywheelSpeed = speed }
+        if let rpm = data.cadence, rpm > 0 {
+            cadence = Int(rpm.rounded())
+        } else if data.speedMps != nil {
+            cadence = estimatedCadence(flywheelSpeed: flywheelSpeed)
+        }
+    }
+
+    private func estimatedCadence(flywheelSpeed: Double) -> Int {
+        Int(RoadPhysics.cadence(flywheelSpeed: flywheelSpeed,
+                                chainringTeeth: settings.chainringTeeth,
+                                cogTeeth: settings.cogTeeth,
+                                wheelCircumferenceMm: settings.wheelCircumferenceMm).rounded())
     }
 
     private func receiveHeartRate(_ bpm: Int?) {
@@ -273,7 +299,8 @@ final class RideEngine {
         tickCount += 1
         let now = Date()
 
-        if now.timeIntervalSince(lastRidingData) > 3 {
+        if now.timeIntervalSince(max(lastRidingData, lastFallbackData)) > 3 {
+            if dataSource != nil { dataSource = nil }
             power = 0
             flywheelSpeed = 0
             cadence = 0

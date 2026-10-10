@@ -88,6 +88,21 @@ final class ZwiftProtocolTests: XCTestCase {
         XCTAssertEqual(ClickMessage(bytes("2A 08 03")), .other(opcode: 0x2A))
     }
 
+    func testIndoorBikeData() {
+        // Speed + power only, as the D100 sends: flags 0x0040, 17.50 km/h, 34 W.
+        let d100 = IndoorBikeData(Data([0x40, 0x00, 0xD6, 0x06, 0x22, 0x00]))
+        XCTAssertEqual(d100, IndoorBikeData(speedKmh: 17.5, cadence: nil, power: 34))
+        // Speed + cadence + power: 26.10 km/h, 85 rpm, 200 W.
+        let full = IndoorBikeData(Data([0x44, 0x00, 0x32, 0x0A, 0xAA, 0x00, 0xC8, 0x00]))
+        XCTAssertEqual(full, IndoorBikeData(speedKmh: 26.1, cadence: 85, power: 200))
+        XCTAssertNil(IndoorBikeData(Data([0x40, 0x00, 0xD6])))
+    }
+
+    func testCyclingPowerMeasurement() {
+        XCTAssertEqual(CyclingPowerMeasurement(Data([0x01, 0x00, 0x96, 0x00, 0x32]))?.power, 150)
+        XCTAssertNil(CyclingPowerMeasurement(Data([0x01, 0x00, 0x96])))
+    }
+
     func testHeartRateMeasurement() {
         XCTAssertEqual(HeartRateMeasurement(Data([0x00, 0x48]))?.bpm, 72)
         XCTAssertEqual(HeartRateMeasurement(Data([0x01, 0x2C, 0x01]))?.bpm, 300)

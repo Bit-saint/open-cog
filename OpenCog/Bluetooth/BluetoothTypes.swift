@@ -14,6 +14,12 @@ enum GATT {
     static let batteryService = CBUUID(string: "180F")
     static let batteryLevel = CBUUID(string: "2A19")
 
+    // Standard trainer services, read only as a fallback data source (power, speed, cadence).
+    static let fitnessMachineService = CBUUID(string: "1826")
+    static let indoorBikeData = CBUUID(string: "2AD2")
+    static let cyclingPowerService = CBUUID(string: "1818")
+    static let cyclingPowerMeasurement = CBUUID(string: "2A63")
+
     /// Zwift Inc. Bluetooth company identifier, little-endian in manufacturer data.
     static let zwiftCompanyID: [UInt8] = [0x4A, 0x09]
     static let trainerNamePrefix = "VANRYSEL"
@@ -54,7 +60,7 @@ enum DeviceRole: String, CaseIterable, Identifiable, Codable {
 
     var servicesToDiscover: [CBUUID] {
         switch self {
-        case .trainer: return [GATT.zwiftTrainerService]
+        case .trainer: return [GATT.zwiftTrainerService, GATT.fitnessMachineService, GATT.cyclingPowerService]
         case .clickLeft, .clickRight: return [GATT.zwiftClickService, GATT.batteryService]
         case .heartRate: return [GATT.heartRateService, GATT.batteryService]
         }
@@ -92,4 +98,59 @@ struct DiscoveredDevice: Identifiable, Equatable {
     var role: DeviceRole
     var rssi: Int
     var lastSeen: Date
+}
+
+/// One line of the on-screen Bluetooth diagnostics log.
+struct BLELogEntry: Identifiable, Equatable {
+    let id = UUID()
+    var date: Date
+    var role: DeviceRole?
+    var text: String
+}
+
+/// Per-device counters shown in Diagnostics.
+struct LinkStats: Equatable {
+    var services: [String] = []
+    var notifying: [String] = []
+    var handshakeAttempts = 0
+    var handshakeConfirmed = false
+    var packetsReceived = 0
+    var lastPacket: String?
+    var lastPacketDate: Date?
+    var commandsWritten = 0
+    var lastCommand: String?
+}
+
+/// Power/speed/cadence from the standard FTMS or Cycling Power services.
+struct TrainerFallbackData: Equatable {
+    var source: String
+    var power: Int?
+    var speedMps: Double?
+    var cadence: Double?
+}
+
+extension Data {
+    var hexString: String { map { String(format: "%02X", $0) }.joined(separator: " ") }
+}
+
+extension CBUUID {
+    /// Short human-readable name for the UUIDs this app uses.
+    var label: String {
+        switch self {
+        case GATT.zwiftTrainerService: return "Zwift (trainer)"
+        case GATT.zwiftClickService: return "Zwift (Click)"
+        case GATT.zwiftAsync: return "Async"
+        case GATT.zwiftSyncRx: return "Sync RX"
+        case GATT.zwiftSyncTx: return "Sync TX"
+        case GATT.heartRateService: return "Heart Rate"
+        case GATT.heartRateMeasurement: return "HR Measurement"
+        case GATT.batteryService: return "Battery"
+        case GATT.batteryLevel: return "Battery Level"
+        case GATT.fitnessMachineService: return "FTMS"
+        case GATT.indoorBikeData: return "Indoor Bike Data"
+        case GATT.cyclingPowerService: return "Cycling Power"
+        case GATT.cyclingPowerMeasurement: return "CP Measurement"
+        default: return uuidString
+        }
+    }
 }

@@ -41,6 +41,16 @@ struct DevicesView: View {
                 } footer: {
                     Text("On your Garmin watch, turn on Broadcast Heart Rate (hold MENU or open the controls menu, then choose Broadcast Heart Rate). The watch then appears here; tap it to connect. OpenCog remembers it for next time.")
                 }
+
+                Section {
+                    NavigationLink {
+                        DiagnosticsView()
+                    } label: {
+                        Label("Diagnostics", systemImage: "stethoscope")
+                    }
+                } footer: {
+                    Text("Shows what each device is sending, step by step. Useful if something connects but doesn't respond.")
+                }
             }
             .navigationTitle("Devices")
             .toolbar {
