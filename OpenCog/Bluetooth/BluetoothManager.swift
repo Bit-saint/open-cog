@@ -169,6 +169,9 @@ final class BluetoothManager: NSObject {
     }
 
     private func classify(_ peripheral: CBPeripheral, advertisement: [String: Any]) -> DeviceRole? {
+        let name = (advertisement[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
+        // Check the trainer name first so Zwift manufacturer data on the trainer can't make it look like a Click.
+        if name.uppercased().hasPrefix(GATT.trainerNamePrefix) { return .trainer }
         if let data = advertisement[CBAdvertisementDataManufacturerDataKey] as? Data {
             let bytes = [UInt8](data)
             if bytes.count >= 3, Array(bytes[0..<2]) == GATT.zwiftCompanyID,
@@ -176,8 +179,6 @@ final class BluetoothManager: NSObject {
                 return side == .left ? .clickLeft : .clickRight
             }
         }
-        let name = (advertisement[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? ""
-        if name.uppercased().hasPrefix(GATT.trainerNamePrefix) { return .trainer }
         let services = advertisement[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
         if services.contains(GATT.zwiftTrainerService) { return .trainer }
         if services.contains(GATT.heartRateService) { return .heartRate }
@@ -208,6 +209,17 @@ final class BluetoothManager: NSObject {
         updateStats(role) { $0.handshakeAttempts = attempt }
         record(role, "→ RideOn (attempt \(attempt), \(writeType(for: rx) == .withResponse ? "with" : "without") response)")
         peripheral.writeValue(Zwift.rideOn, for: rx, type: writeType(for: rx))
+
+        // The reference implementation (trainer_core.py) never waits for the trainer's reply:
+        // it writes RideOn, waits 0.5 s and starts sending commands. Do the same.
+        if role == .trainer && attempt == 1 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self, self.links[role]?.id == id, self.links[role]?.state == .handshaking,
+                      peripheral.state == .connected else { return }
+                self.record(role, "Starting without waiting for the RideOn reply")
+                self.markReady(role)
+            }
+        }
 
         // No reply? Try again; after several attempts carry on anyway so commands still go out.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
