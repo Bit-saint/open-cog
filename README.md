@@ -52,7 +52,28 @@ which gear ratio, grade or ERG target to simulate, using the Zwift protocol desc
 6. Go to **Settings** and enter your weight, bike weight, FTP, max heart rate and chainring size. Cadence is
    estimated from flywheel speed, chainring and the 14T Zwift Cog, so the chainring size matters.
 
-Run the unit tests with ⌘U. They check the protocol encoder and decoder against the byte captures in the
+## Installing from Windows (no Mac)
+
+GitHub Actions builds the app on a Mac in the cloud on every push (`.github/workflows/ios.yml`). It produces an
+unsigned `OpenCog.ipa` file, which you sign and install with your own Apple ID.
+
+1. On GitHub, open **Actions → iOS build**, pick the latest green run, and download the **OpenCog-ipa** artifact.
+   Unzip it to get `OpenCog.ipa`. To start a fresh build, use *Run workflow*.
+2. On Windows, install **iTunes** and **iCloud**. Use the versions from apple.com, not the Microsoft Store ones.
+   Then install **[Sideloadly](https://sideloadly.io)**.
+3. On the iPhone, turn on **Developer Mode** (Settings → Privacy & Security → Developer Mode). The phone restarts.
+4. Connect the iPhone by USB and trust the computer. In Sideloadly, drop in `OpenCog.ipa`, enter your Apple ID,
+   and press **Start**. A free Apple ID works.
+5. On the iPhone, go to Settings → General → VPN & Device Management and **trust** your Apple ID's developer
+   profile. Then open OpenCog.
+
+With a free Apple ID the install lasts **7 days**. After that, sideload it again; your rides and settings are
+kept. Sideloadly can refresh it automatically over Wi-Fi, and AltStore is an alternative that does the same.
+A paid Apple Developer account extends this to a year.
+
+## Tests
+
+The GitHub workflow also runs the unit tests on an iPhone simulator. On a Mac, run them with ⌘U. They check the protocol encoder and decoder against the byte captures in the
 protocol doc, plus the Click relay filter, physics and ride metrics.
 
 ## Zwift Click button map

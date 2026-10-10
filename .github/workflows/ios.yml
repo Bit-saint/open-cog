@@ -1,0 +1,71 @@
+name: iOS build
+
+on:
+  push:
+    paths:
+      - "OpenCog/**"
+      - "OpenCogTests/**"
+      - "OpenCog.xcodeproj/**"
+      - "Config/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+jobs:
+  ipa:
+    name: Unsigned IPA (for sideloading)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode version
+        run: xcodebuild -version
+
+      - name: Build for device without signing
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project OpenCog.xcodeproj \
+            -scheme OpenCog \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tee build.log | grep -E "error:|warning:|BUILD" || true
+          test -d build/Build/Products/Release-iphoneos/OpenCog.app
+
+      - name: Package IPA
+        run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/OpenCog.app Payload/
+          zip -qry OpenCog.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenCog-ipa
+          path: OpenCog.ipa
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-log
+          path: build.log
+
+  tests:
+    name: Unit tests (simulator)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: |
+          set -o pipefail
+          UDID=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices[][] | select(.name | startswith("iPhone"))][0].udid')
+          echo "Simulator: $UDID"
+          xcodebuild test \
+            -project OpenCog.xcodeproj \
+            -scheme OpenCog \
+            -destination "id=$UDID" \
+            CODE_SIGNING_ALLOWED=NO \
+            | grep -E "error:|Test Case|Executed|TEST|BUILD" || exit ${PIPESTATUS[0]}
