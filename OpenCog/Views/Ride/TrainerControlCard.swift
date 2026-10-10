@@ -177,3 +177,115 @@ private struct ErgControl: View {
         }
     }
 }
+
+/// Compact floating version of the trainer controls for the iPad ride screen
+/// (bottom-right corner): mode switch, gear and grade — or ERG target.
+struct TrainerControlPanel: View {
+    @Environment(RideEngine.self) private var engine
+    @Environment(BluetoothManager.self) private var bluetooth
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Picker("Mode", selection: Binding(get: { engine.mode }, set: { engine.setMode($0) })) {
+                ForEach(TrainerMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if engine.mode == .sim {
+                HStack {
+                    RoundControlButton(systemImage: "minus", accessibilityLabel: "Shift to easier gear", size: 48) {
+                        engine.shiftDown()
+                    }
+                    .disabled(engine.gear <= GearTable.range.lowerBound)
+                    Spacer()
+                    VStack(spacing: 0) {
+                        Text("GEAR")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text("\(engine.gear)")
+                            .font(.system(size: 44, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText(value: Double(engine.gear)))
+                            .animation(.snappy, value: engine.gear)
+                        Text(String(format: "%.2f", GearTable.ratio(forGear: engine.gear)))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Gear \(engine.gear) of \(GearTable.count)")
+                    Spacer()
+                    RoundControlButton(systemImage: "plus", accessibilityLabel: "Shift to harder gear", size: 48) {
+                        engine.shiftUp()
+                    }
+                    .disabled(engine.gear >= GearTable.range.upperBound)
+                }
+
+                GearIndicator(gear: engine.gear)
+
+                Divider()
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Grade")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(Format.grade(engine.grade))
+                            .font(.title2.weight(.bold))
+                            .fontDesign(.rounded)
+                            .monospacedDigit()
+                            .contentTransition(.numericText(value: engine.grade))
+                            .animation(.snappy, value: engine.grade)
+                    }
+                    .accessibilityElement(children: .combine)
+                    Spacer()
+                    RoundControlButton(systemImage: "arrow.down.right", accessibilityLabel: "Decrease grade", size: 40) {
+                        engine.adjustGrade(by: -RideEngine.gradeStep)
+                    }
+                    RoundControlButton(systemImage: "arrow.up.right", accessibilityLabel: "Increase grade", size: 40) {
+                        engine.adjustGrade(by: RideEngine.gradeStep)
+                    }
+                }
+            } else {
+                HStack {
+                    RoundControlButton(systemImage: "minus", accessibilityLabel: "Decrease target by 5 watts", size: 48) {
+                        engine.adjustErgTarget(by: -5)
+                    }
+                    Spacer()
+                    VStack(spacing: 0) {
+                        Text("TARGET")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        HStack(alignment: .firstTextBaseline, spacing: 3) {
+                            Text("\(engine.ergTarget)")
+                                .font(.system(size: 44, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .contentTransition(.numericText(value: Double(engine.ergTarget)))
+                                .animation(.snappy, value: engine.ergTarget)
+                            Text("W")
+                                .font(.headline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                    Spacer()
+                    RoundControlButton(systemImage: "plus", accessibilityLabel: "Increase target by 5 watts", size: 48) {
+                        engine.adjustErgTarget(by: 5)
+                    }
+                }
+            }
+
+            if !bluetooth.isReady(.trainer) {
+                Label("Trainer not connected", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .padding(16)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .shadow(color: .black.opacity(0.15), radius: 16, y: 6)
+        .animation(.snappy, value: engine.mode)
+    }
+}

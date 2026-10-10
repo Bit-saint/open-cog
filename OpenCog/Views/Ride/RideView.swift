@@ -14,7 +14,7 @@ struct RideView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
+            Group {
                 if horizontalSizeClass == .regular {
                     regularLayout
                 } else {
@@ -70,31 +70,46 @@ struct RideView: View {
 
     // MARK: Layouts
 
-    /// iPad and large iPhones in landscape: metrics on the left, controls on the right.
+    /// iPad (and large iPhones in landscape): full-width metrics, with ride controls bottom-left
+    /// and a compact gear/grade panel floating in the bottom-right corner.
     private var regularLayout: some View {
-        HStack(alignment: .top, spacing: 20) {
-            VStack(spacing: 20) {
-                RideHeader()
-                MetricsGrid(columns: [GridItem(.adaptive(minimum: 200), spacing: 16)])
-                LiveChartCard()
+        ZStack(alignment: .bottom) {
+            ScrollView {
+                VStack(spacing: 20) {
+                    RideHeader()
+                    HeroMetrics()
+                    SecondaryMetrics(columns: [GridItem(.adaptive(minimum: 170), spacing: 14)])
+                    LiveChartCard()
+                }
+                .padding(20)
+                .padding(.bottom, 290) // room to scroll past the floating panels
             }
-            VStack(spacing: 20) {
-                TrainerControlCard()
+
+            HStack(alignment: .bottom, spacing: 20) {
                 RideControls(confirmingFinish: $confirmingFinish)
+                    .padding(12)
+                    .frame(maxWidth: 380)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .shadow(color: .black.opacity(0.12), radius: 14, y: 5)
+                Spacer(minLength: 0)
+                TrainerControlPanel()
+                    .frame(width: 330)
             }
-            .frame(width: 360)
+            .padding(20)
         }
-        .padding(20)
     }
 
     private var compactLayout: some View {
-        VStack(spacing: 16) {
-            RideHeader()
-            MetricsGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)])
-            TrainerControlCard()
-            LiveChartCard()
+        ScrollView {
+            VStack(spacing: 16) {
+                RideHeader()
+                HeroMetrics()
+                SecondaryMetrics(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)])
+                TrainerControlCard()
+                LiveChartCard()
+            }
+            .padding()
         }
-        .padding()
     }
 
     @ViewBuilder
@@ -173,30 +188,92 @@ private struct RideHeader: View {
 
 // MARK: - Metrics
 
-private struct MetricsGrid: View {
+/// Heart rate (tinted by zone) and speed, larger than everything else.
+private struct HeroMetrics: View {
+    @Environment(RideEngine.self) private var engine
+    @Environment(AppSettings.self) private var settings
+    @Environment(BluetoothManager.self) private var bluetooth
+
+    var body: some View {
+        HStack(spacing: 14) {
+            heartRate
+            speed
+        }
+    }
+
+    private var heartRate: some View {
+        let bpm = engine.heartRate
+        let zone = bpm.flatMap { TrainingZone.heartRate($0, max: settings.maxHeartRate) }
+        let badge: String
+        if let zone {
+            badge = "Zone \(zone.number) · \(zone.name)"
+        } else if bluetooth.link(for: .heartRate) == nil {
+            badge = "Pair your watch in Devices"
+        } else {
+            badge = bluetooth.isReady(.heartRate) ? "Waiting for data…" : "Connecting…"
+        }
+        return HeroMetricTile(title: "Heart Rate", value: bpm.map { "\($0)" } ?? "--", unit: "bpm",
+                              tint: zone?.color ?? .red, badge: badge, tinted: zone != nil) {
+            Image(systemName: "heart.fill")
+                .symbolEffect(.pulse, options: .repeating, isActive: bpm != nil)
+        } footer: {
+            HeartRateZoneBar(current: zone?.number)
+        }
+    }
+
+    private var speed: some View {
+        let current = Format.speed(engine.virtualSpeed, units: settings.units)
+        let average = Format.speed(engine.metrics.averageSpeed, units: settings.units)
+        let max = Format.speed(engine.metrics.maxSpeed, units: settings.units)
+        return HeroMetricTile(title: "Speed", value: current.value, unit: current.unit, tint: .blue,
+                              badge: nil, tinted: false) {
+            Image(systemName: "speedometer")
+        } footer: {
+            Text(engine.metrics.seconds > 0 ? "Avg \(average.value) · Max \(max.value) \(current.unit)" : "Virtual road speed")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+    }
+}
+
+/// Five segments for the heart-rate zones; the current one is full colour and taller.
+private struct HeartRateZoneBar: View {
+    var current: Int?
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 4) {
+            ForEach(Array(TrainingZone.heartRateColors.enumerated()), id: \.offset) { index, color in
+                let active = current == index + 1
+                Capsule()
+                    .fill(color.opacity(active ? 1 : 0.25))
+                    .frame(height: active ? 10 : 6)
+            }
+        }
+        .frame(height: 10, alignment: .bottom)
+        .animation(.snappy, value: current)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct SecondaryMetrics: View {
     var columns: [GridItem]
 
     @Environment(RideEngine.self) private var engine
     @Environment(AppSettings.self) private var settings
-    @Environment(BluetoothManager.self) private var bluetooth
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 12) {
             let powerZone = TrainingZone.power(engine.powerAverage3s, ftp: settings.ftp)
             MetricTile(title: "Power", value: "\(engine.power)", unit: "W", systemImage: "bolt.fill",
                        tint: powerZone?.color ?? .yellow,
-                       detail: powerZone.map { "Z\($0.number) · \($0.name)" } ?? "3s avg \(engine.powerAverage3s) W",
-                       prominent: true)
-
-            heartRateTile
+                       detail: powerZone.map { "Z\($0.number) · \($0.name)" } ?? "3s avg \(engine.powerAverage3s) W")
 
             MetricTile(title: "Cadence", value: "\(engine.cadence)", unit: "rpm",
                        systemImage: "arrow.triangle.2.circlepath", tint: .teal,
-                       detail: "Estimated from flywheel")
-
-            let speed = Format.speed(engine.virtualSpeed, units: settings.units)
-            MetricTile(title: "Speed", value: speed.value, unit: speed.unit,
-                       systemImage: "speedometer", tint: .blue)
+                       detail: "Estimated")
 
             let distance = Format.distance(engine.metrics.distance, units: settings.units)
             MetricTile(title: "Distance", value: distance.value, unit: distance.unit,
@@ -213,24 +290,6 @@ private struct MetricsGrid: View {
 
             MetricTile(title: "Energy", value: "\(engine.metrics.kilojoules)", unit: "kJ",
                        systemImage: "flame.fill", tint: .red)
-        }
-    }
-
-    private var heartRateTile: some View {
-        let bpm = engine.heartRate
-        let zone = bpm.flatMap { TrainingZone.heartRate($0, max: settings.maxHeartRate) }
-        let detail: String
-        if let zone {
-            detail = "Z\(zone.number) · \(zone.name)"
-        } else if bluetooth.link(for: .heartRate) == nil {
-            detail = "Pair your watch in Devices"
-        } else {
-            detail = bluetooth.isReady(.heartRate) ? "Waiting for data…" : "Connecting…"
-        }
-        return MetricTile(title: "Heart Rate", value: bpm.map { "\($0)" } ?? "--", unit: "bpm",
-                          tint: zone?.color ?? .red, detail: detail, prominent: true) {
-            Image(systemName: "heart.fill")
-                .symbolEffect(.pulse, options: .repeating, isActive: bpm != nil)
         }
     }
 }

@@ -21,6 +21,9 @@ struct TrainingZone: Equatable {
         }
     }
 
+    /// Colours of heart-rate zones 1–5, matching `heartRate(_:max:)`.
+    static let heartRateColors: [Color] = [.gray, .blue, .green, .orange, .red]
+
     /// Five heart-rate zones from max heart rate.
     static func heartRate(_ bpm: Int, max: Int) -> TrainingZone? {
         guard max > 0, bpm > 0 else { return nil }
