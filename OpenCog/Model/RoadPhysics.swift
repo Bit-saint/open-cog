@@ -4,14 +4,17 @@ import Foundation
 /// is derived from power, grade and mass (docs/BLUETOOTH_PROTOCOL.md §6).
 enum RoadPhysics {
     static let gravity = 9.81
+    /// Sea-level air density, kg/m³.
+    static let airDensity = 1.225
 
     /// Steady-state power needed to ride at `speed` m/s.
-    /// `cwa` is treated as ρ·Cd·A, so aerodynamic power is ½·CwA·v³.
+    /// `cwa` is Zwift's "cw·A" — drag coefficient × frontal area in m² (cw is the German symbol
+    /// for Cd), so aerodynamic power is ½·ρ·CwA·v³.
     static func power(atSpeed speed: Double, gradePercent: Double, totalMassKg: Double,
                       cwa: Double = Zwift.defaultCwA, crr: Double = Zwift.defaultCrr) -> Double {
         let theta = atan(gradePercent / 100)
         let rolling = totalMassKg * gravity * (sin(theta) + crr * cos(theta))
-        return speed * rolling + 0.5 * cwa * speed * speed * speed
+        return speed * rolling + 0.5 * airDensity * cwa * speed * speed * speed
     }
 
     /// Solves `power(atSpeed:) == watts` for speed by bisection over 0…30 m/s.
@@ -34,6 +37,15 @@ enum RoadPhysics {
             if f(mid) > 0 { high = mid } else { low = mid }
         }
         return (low + high) / 2
+    }
+
+    /// Virtual road speed with virtual shifting. The flywheel turns as if the bike were in the
+    /// physical gear (chainring ÷ Zwift Cog); the trainer simulates the virtual gear, so the road
+    /// speed it is simulating is the flywheel speed scaled by virtual ÷ physical ratio
+    /// (= cadence × virtual ratio × wheel circumference).
+    static func virtualSpeed(flywheelSpeed: Double, gearRatio: Double, chainringTeeth: Int, cogTeeth: Int) -> Double {
+        guard chainringTeeth > 0, cogTeeth > 0 else { return flywheelSpeed }
+        return flywheelSpeed * gearRatio / (Double(chainringTeeth) / Double(cogTeeth))
     }
 
     /// Cadence estimate from flywheel speed. The Zwift Cog fixes the physical gear,

@@ -191,6 +191,22 @@ final class PhysicsTests: XCTestCase {
         XCTAssertGreaterThan(RoadPhysics.speed(forPower: 0, gradePercent: -5, totalMassKg: 85), 5)
     }
 
+    func testVirtualSpeedFollowsGearAndCadence() {
+        // Flywheel speed for a given cadence with a 34T ring on the 14T Zwift Cog.
+        func flywheel(rpm: Double) -> Double { rpm / 60 * 34 / 14 * 2.096 }
+        func kmh(gear: Int, rpm: Double) -> Double {
+            RoadPhysics.virtualSpeed(flywheelSpeed: flywheel(rpm: rpm), gearRatio: GearTable.ratio(forGear: gear),
+                                     chainringTeeth: 34, cogTeeth: 14) * 3.6
+        }
+        // speed = cadence × virtual ratio × wheel circumference
+        XCTAssertEqual(kmh(gear: 12, rpm: 90), 90.0 / 60 * 2.40 * 2.096 * 3.6, accuracy: 0.01)
+        // Harder gear at lower cadence: 12 @ 90 rpm ≈ 27.2 km/h, 16 @ 75 rpm ≈ 30.6 km/h.
+        XCTAssertEqual(kmh(gear: 12, rpm: 90), 27.2, accuracy: 0.1)
+        XCTAssertEqual(kmh(gear: 16, rpm: 75), 30.6, accuracy: 0.1)
+        // Same cadence, easier gear → slower, even where the trainer's ~40 W floor makes power equal.
+        XCTAssertLessThan(kmh(gear: 4, rpm: 85), kmh(gear: 8, rpm: 85))
+    }
+
     func testCadenceEstimate() {
         // 26.1 km/h with 34T and the 14T Zwift Cog ≈ 85 rpm.
         let rpm = RoadPhysics.cadence(flywheelSpeed: 26.1 / 3.6, chainringTeeth: 34, cogTeeth: 14,

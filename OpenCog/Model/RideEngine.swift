@@ -213,7 +213,7 @@ final class RideEngine {
         dataSource = "Zwift"
         power = data.power
         flywheelSpeed = data.flywheelSpeed
-        cadence = estimatedCadence(flywheelSpeed: data.flywheelSpeed)
+        cadence = estimatedCadence(flywheelSpeed: data.flywheelSpeed, power: data.power)
     }
 
     /// FTMS / Cycling Power data, used only while Zwift RidingData isn't arriving.
@@ -229,12 +229,15 @@ final class RideEngine {
         if let rpm = data.cadence, rpm > 0 {
             cadence = Int(rpm.rounded())
         } else if data.speedMps != nil {
-            cadence = estimatedCadence(flywheelSpeed: flywheelSpeed)
+            cadence = estimatedCadence(flywheelSpeed: flywheelSpeed, power: power)
         }
     }
 
-    private func estimatedCadence(flywheelSpeed: Double) -> Int {
-        Int(RoadPhysics.cadence(flywheelSpeed: flywheelSpeed,
+    /// Cadence from flywheel speed. When the rider stops pedalling the freehub lets the flywheel
+    /// spin down on its own, so with no power the cranks aren't turning: report 0.
+    private func estimatedCadence(flywheelSpeed: Double, power: Int) -> Int {
+        guard power > 0 else { return 0 }
+        return Int(RoadPhysics.cadence(flywheelSpeed: flywheelSpeed,
                                 chainringTeeth: settings.chainringTeeth,
                                 cogTeeth: settings.cogTeeth,
                                 wheelCircumferenceMm: settings.wheelCircumferenceMm).rounded())
@@ -329,11 +332,8 @@ final class RideEngine {
         if recentPower.count > 3 { recentPower.removeFirst() }
         powerAverage3s = recentPower.reduce(0, +) / max(recentPower.count, 1)
 
-        let roadGrade = mode == .sim ? grade : 0
-        let target = RoadPhysics.speed(forPower: Double(power), gradePercent: roadGrade,
-                                       totalMassKg: settings.totalMassKg)
-        virtualSpeed += (target - virtualSpeed) * 0.35
-        if target < 0.1 && virtualSpeed < 0.3 { virtualSpeed = 0 }
+        virtualSpeed += (targetSpeed() - virtualSpeed) * 0.5
+        if virtualSpeed < 0.3 && flywheelSpeed < 0.3 && power == 0 { virtualSpeed = 0 }
 
         liveHistory.append(LivePoint(time: now, power: power, heartRate: heartRate))
         if liveHistory.count > 300 { liveHistory.removeFirst(liveHistory.count - 300) }
@@ -341,10 +341,33 @@ final class RideEngine {
         record()
     }
 
+    /// Road speed shown on screen.
+    /// - Gears: the speed the trainer is simulating — flywheel speed × virtual ÷ physical gear
+    ///   ratio (cadence × gear × wheel). On descents the trainer rides flat, so the speed the
+    ///   rider's power would give on the requested grade is used when it is higher.
+    /// - ERG: the trainer holds power regardless of gear, so speed comes from power on a flat road.
+    private func targetSpeed() -> Double {
+        switch mode {
+        case .sim:
+            let geared = RoadPhysics.virtualSpeed(flywheelSpeed: flywheelSpeed,
+                                                  gearRatio: GearTable.ratio(forGear: gear),
+                                                  chainringTeeth: settings.chainringTeeth,
+                                                  cogTeeth: settings.cogTeeth)
+            guard grade < 0 else { return geared }
+            let descending = RoadPhysics.speed(forPower: Double(power), gradePercent: grade,
+                                               totalMassKg: settings.totalMassKg)
+            return max(geared, descending)
+        case .erg:
+            return RoadPhysics.speed(forPower: Double(power), gradePercent: 0, totalMassKg: settings.totalMassKg)
+        }
+    }
+
     private func record() {
         guard state == .riding || state == .autoPaused else { return }
 
-        let moving = power > 0 || flywheelSpeed >= 0.5
+        // The flywheel says whether the rider is moving. Power alone can't: in ERG the trainer may
+        // keep reporting values near the target. Cycling Power has no speed, so use power there.
+        let moving = flywheelSpeed >= 0.5 || (dataSource == "Cycling Power" && power > 0)
         stoppedSeconds = moving ? 0 : stoppedSeconds + 1
         if settings.autoPause {
             if state == .riding && stoppedSeconds > 3 { state = .autoPaused }

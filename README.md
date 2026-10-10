@@ -110,8 +110,10 @@ How the parts fit together:
 - `RideEngine` holds the gear, grade, mode and ERG target. When the trainer becomes ready it sends Simulation and
   Physical (or ERG). After that it resends the active mode every 2 s and sends Physical again whenever the gear or
   a weight changes.
-- Virtual speed comes from power, grade and total mass using the same road model as the trainer (CwA 0.51,
-  Crr 0.004). Cadence is `flywheel m/s ÷ (chainring/cog × wheel circumference) × 60`.
+- Speed in Gears mode is the speed the trainer is simulating: flywheel speed × virtual gear ratio ÷ physical
+  ratio (chainring ÷ 14T Cog), i.e. cadence × gear × wheel circumference. On descents (which the trainer rides as
+  flat) and in ERG mode it comes from power with the road model (½·ρ·CwA·v³, CwA 0.51 m², Crr 0.004).
+  Cadence is `flywheel m/s ÷ (chainring/cog × wheel circumference) × 60`, and 0 when no power is produced.
 
 ## Status
 
